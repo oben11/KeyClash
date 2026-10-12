@@ -5,7 +5,7 @@ This guide explains how the pieces fit together so you can rebuild the project y
 ## 1. The big picture
 
 ```
- ┌──────────── Browser (or Electron window) ────────────┐        ┌──────── Node server ────────┐
+ ┌──────────── Browser ────────────┐        ┌──────── Node server ────────┐
  │  React app (src/)                                     │        │  server/index.ts            │
  │                                                       │  HTTP  │                             │
  │  loads the page  ───────────────────────────────────────────▶ │  serves the built website   │
@@ -33,8 +33,7 @@ Two ideas to hold onto:
 | **anime.js** | Animations: cursor blink, progress bars, countdown pop, screen entrances. | `src/animate.ts` + uses in components |
 | **WebSocket (`ws`)** | A two-way connection between browser and server so both can send messages any time. This is what makes multiplayer live. | `server/index.ts`, `src/useGame.ts` |
 | **PWA** (`vite-plugin-pwa`) | Adds a manifest and a service worker so the site can be installed like an app and cached. | `vite.config.ts`, `src/main.tsx` |
-| **Electron** | Wraps the website in a desktop window and bundles the server inside, so it runs without a browser. | `electron/main.mjs` |
-| **esbuild / tsx** | `tsx` runs TypeScript directly in development. `esbuild` bundles the server into one file for Electron. | `package.json` scripts |
+| **tsx** | Runs the TypeScript server directly in development (`npm start`, `npm run dev`). | `package.json` scripts |
 
 ## 3. One game, start to finish
 
@@ -44,8 +43,8 @@ Every message is JSON with a `t` field. All of them are typed in `shared/protoco
 2. **Join.** A friend enters the code and sends `{t:'join', name, code}`. The server adds them and sends a fresh `lobby` message to **everyone** in the room, so each Lobby screen updates.
 3. **Start.** The host clicks *Start* → `{t:'start'}`. The server (only if the sender is the host and there are 2+ players) picks a random quote, notes `startAt = now + 3s`, and sends `{t:'start', quote, countdownMs:3000}` to everyone.
 4. **Countdown.** Each browser sets its own start time (`Date.now() + countdownMs`) and shows the Race screen with the countdown. Typing unlocks at zero. (Using each browser's own clock avoids needing synchronized clocks. Differences are a few milliseconds.)
-5. **Racing.** On every keystroke the browser sends `{t:'progress', typed, mistakes}`. The server stores it and broadcasts `{t:'progress', progress:{playerId: charsTyped}}` so everyone's progress bars move.
-6. **Finish.** When a player's `typed` equals the quote exactly, the server computes stats for **all** players at that moment and sends `{t:'results', results}`. The winner is first in the list. Everyone's browser shows the Results screen.
+5. **Racing.** On every keystroke the browser sends `{t:'progress', typed, mistakes}`. The server stores it and broadcasts `{t:'progress', progress:{playerId: correctChars}}` so everyone's progress bars move. Progress counts letters typed *correctly*, so a bar only reaches 100% when the quote is actually right.
+6. **Finish.** When a player's `typed` equals the quote exactly (reaching the end with a red letter doesn't count; the Race screen tells you to fix it), the server computes stats for **all** players at that moment and sends `{t:'results', results}`. The winner is first in the list. Everyone's browser shows the Results screen.
 7. **Rematch.** The host clicks *Back to lobby* → `{t:'rematch'}` and the server sends `lobby` again.
 
 If someone disconnects, the server removes them, passes host to another player if needed, and (if only one player remains mid-race) ends the race.
@@ -78,8 +77,8 @@ Both sides import the same message types. If you rename a field on one side, Typ
 ### The PWA part
 `vite-plugin-pwa` (in `vite.config.ts`) generates a web manifest (name, icons, colors) and a service worker (a background script that caches files). `registerSW()` in `main.tsx` turns it on. Browsers then offer "Install", and the app opens in its own window. Multiplayer still needs the server.
 
-### Electron
-Electron = Chromium + Node. `electron/main.mjs` runs in Node: it starts the same `startServer()` function as `npm start`, then opens browser windows pointing at `http://localhost:<port>`. Since each window is a separate WebSocket connection, each is a separate player. `npm run build:server` first bundles the server TypeScript into `server-dist/server.cjs` so Electron can load it; `electron-builder` (config in `package.json`) packs everything into a `.dmg`.
+### Stale code protection
+Both sides check `PROTOCOL_VERSION` (in `shared/protocol.ts`). If your browser page and your server disagree (an old server still running, or a cached page), you get a clear error on the Home screen instead of a game that silently doesn't update. The server also refuses to start if port 3001 is taken, so the page can't end up talking to an old server by accident. Bump the number whenever you change a message.
 
 ## 5. File tour
 
@@ -95,7 +94,6 @@ Electron = Chromium + Node. `electron/main.mjs` runs in Node: it starts the same
 | `src/components/RaceTrack.tsx` | Animating a value with anime.js in an effect. |
 | `src/components/Countdown.tsx` | Animations triggered by a changing value. |
 | `src/animate.ts` | A custom hook wrapping a library. |
-| `electron/main.mjs` | How a desktop app starts and creates windows. |
 
 ## 6. Rebuild it yourself: suggested order
 
@@ -111,12 +109,10 @@ Each step runs on its own, so you always have something working.
 8. **Finish.** Add `finishRace` on the server and the Results screen.
 9. **Animations.** Add anime.js: cursor blink first, then progress bars, countdown, entrances.
 10. **PWA.** Add `vite-plugin-pwa` and icons.
-11. **Electron.** Add `electron/main.mjs`, bundle the server with esbuild, and package with `electron-builder`.
 
 ## 7. Ideas to extend it
 
 - Fetch quotes from an API; add short/medium/long modes.
 - Persist best scores (SQLite or a JSON file on the server).
-- Let the Electron app join someone else's server (a "Server…" setting that loads a different URL).
 - Spectators, ready-up buttons, or a live WPM column for every player.
 - Validate incoming messages with a library like `zod` instead of trusting their shape.

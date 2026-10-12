@@ -2,7 +2,7 @@
 // messages from the server, and turns them into React state. Screens never
 // touch the socket: they read state and call the functions returned below.
 import { useRef, useState } from 'react';
-import type { ClientMsg, PlayerInfo, PlayerResult, ServerMsg } from '../shared/protocol';
+import { PROTOCOL_VERSION, type ClientMsg, type PlayerInfo, type PlayerResult, type ServerMsg } from '../shared/protocol';
 
 /** Which screen to show. (The server only knows lobby/race/results; "home" is client-only.) */
 export type View = 'home' | 'lobby' | 'race' | 'results';
@@ -17,7 +17,7 @@ export function useGame() {
   const [players, setPlayers] = useState<PlayerInfo[]>([]);
   const [quote, setQuote] = useState('');
   const [startAt, setStartAt] = useState(0); // local timestamp when typing unlocks
-  const [progress, setProgress] = useState<Record<string, number>>({}); // playerId -> chars typed
+  const [progress, setProgress] = useState<Record<string, number>>({}); // playerId -> chars typed correctly
   const [results, setResults] = useState<PlayerResult[]>([]);
   const [error, setError] = useState('');
 
@@ -40,6 +40,13 @@ export function useGame() {
       const msg: ServerMsg = JSON.parse(event.data);
       switch (msg.t) {
         case 'lobby':
+          if (msg.v !== PROTOCOL_VERSION) { // the server is running old code
+            socket.current = null;
+            ws.close();
+            setView('home');
+            setError('The server is running old code. Stop any other Keyclash server (check port 3001) and restart.');
+            break;
+          }
           setMyId(msg.you);
           setCode(msg.code);
           setPlayers(msg.players);
@@ -84,8 +91,8 @@ export function useGame() {
   return {
     view, myId, code, players, quote, startAt, progress, results, error,
     isHost: players.find((p) => p.id === myId)?.host ?? false,
-    createLobby: (name: string) => connect({ t: 'create', name }),
-    joinLobby: (name: string, code: string) => connect({ t: 'join', name, code }),
+    createLobby: (name: string) => connect({ t: 'create', v: PROTOCOL_VERSION, name }),
+    joinLobby: (name: string, code: string) => connect({ t: 'join', v: PROTOCOL_VERSION, name, code }),
     startRace: () => send({ t: 'start' }),
     sendProgress: (typed: string, mistakes: number) => send({ t: 'progress', typed, mistakes }),
     rematch: () => send({ t: 'rematch' }),

@@ -1,5 +1,5 @@
 /**
- * The Keyclash game server.
+ * The Keyclash game server. Run it with `npm start` (or `npm run dev`).
  *
  * It does two jobs:
  *   1. Serves the built website (the `dist` folder) over plain HTTP.
@@ -13,9 +13,8 @@ import { createServer, type ServerResponse } from 'http';
 import { readFile } from 'fs/promises';
 import { extname, join } from 'path';
 import { randomUUID } from 'crypto';
-import type { AddressInfo } from 'net';
 import { WebSocketServer, WebSocket } from 'ws';
-import type { ClientMsg, Phase, PlayerResult, ServerMsg } from '../shared/protocol';
+import { PROTOCOL_VERSION, type ClientMsg, type Phase, type PlayerResult, type ServerMsg } from '../shared/protocol';
 
 // Swap this for a call to a quotes API if you want fresh content.
 const QUOTES = [
@@ -68,6 +67,7 @@ const sendLobby = (room: Room) =>
   room.players.forEach((p) =>
     send(p.ws, {
       t: 'lobby',
+      v: PROTOCOL_VERSION,
       phase: room.phase,
       code: room.code,
       you: p.id,
@@ -114,116 +114,123 @@ function finishRace(room: Room, winner: Player) {
   broadcast(room, { t: 'results', results });
 }
 
-// ---------- the server itself ----------
+// ---------- the website + the game ----------
 
 const MIME: Record<string, string> = {
   '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png',
   '.svg': 'image/svg+xml', '.webmanifest': 'application/manifest+json', '.json': 'application/json',
 };
 
-/** Starts everything. Falls back to a random free port if `port` is taken. */
-export function startServer({ port, distDir }: { port: number; distDir: string }) {
-  // ----- HTTP: hand out the website files -----
-  const sendFile = async (res: ServerResponse, file: string) => {
-    const body = await readFile(file);
-    res.writeHead(200, { 'Content-Type': MIME[extname(file)] ?? 'application/octet-stream' });
-    res.end(body);
-  };
+const PORT = Number(process.env.PORT) || 3001;
+const dist = join(process.cwd(), 'dist'); // the built website (npm run build)
 
-  const web = createServer(async (req, res) => {
-    const urlPath = (req.url ?? '/').split('?')[0];
-    const file = join(distDir, urlPath === '/' ? 'index.html' : urlPath);
+// ----- HTTP: hand out the website files -----
+const sendFile = async (res: ServerResponse, file: string) => {
+  const body = await readFile(file);
+  res.writeHead(200, { 'Content-Type': MIME[extname(file)] ?? 'application/octet-stream' });
+  res.end(body);
+};
+
+const web = createServer(async (req, res) => {
+  const urlPath = (req.url ?? '/').split('?')[0];
+  const file = join(dist, urlPath === '/' ? 'index.html' : urlPath);
+  try {
+    if (!file.startsWith(dist)) throw new Error('outside dist'); // block ../ tricks
+    await sendFile(res, file);
+  } catch {
+    // Not a real file -> serve index.html (normal for single-page apps).
     try {
-      if (!file.startsWith(distDir)) throw new Error('outside dist'); // block ../ tricks
-      await sendFile(res, file);
+      await sendFile(res, join(dist, 'index.html'));
     } catch {
-      // Not a real file -> serve index.html (normal for single-page apps).
-      try {
-        await sendFile(res, join(distDir, 'index.html'));
-      } catch {
-        res.writeHead(404);
-        res.end('Run "npm run build" first.');
+      res.writeHead(404);
+      res.end('Run "npm run build" first.');
+    }
+  }
+});
+
+// ----- WebSocket: the game -----
+const wss = new WebSocketServer({ server: web, path: '/ws' });
+
+// Runs once for every browser that connects.
+wss.on('connection', (ws) => {
+  let room: Room | undefined; // the room this connection belongs to (once it joins one)
+  let me: Player | undefined; // and which player it is
+
+  ws.on('message', (raw) => {
+    let msg: ClientMsg;
+    try { msg = JSON.parse(String(raw)); } catch { return; } // ignore garbage
+
+    // --- creating or joining a lobby ---
+    if (msg.t === 'create' || msg.t === 'join') {
+      if (room) return; // already in one
+      if (msg.v !== PROTOCOL_VERSION) {
+        return send(ws, { t: 'error', msg: 'Your page is out of date. Hard-refresh this tab (Cmd+Shift+R).' });
       }
+      const name = String(msg.name).trim().slice(0, 16) || 'Player';
+      const target = msg.t === 'create' ? createRoom() : rooms.get(String(msg.code).toUpperCase());
+
+      if (!target) return send(ws, { t: 'error', msg: 'No lobby with that code.' });
+      if (target.phase !== 'lobby') return send(ws, { t: 'error', msg: 'That race has already started.' });
+      if (target.players.size >= MAX_PLAYERS) return send(ws, { t: 'error', msg: `Lobby is full (${MAX_PLAYERS} players).` });
+
+      me = { id: randomUUID().slice(0, 8), name, ws, typed: '', mistakes: 0 };
+      if (msg.t === 'create') target.hostId = me.id; // the creator is the host
+      target.players.set(me.id, me);
+      room = target;
+      sendLobby(target);
+      return;
+    }
+
+    // Everything below needs a joined player.
+    if (!room || !me) return;
+    const r = room;
+    const player = me;
+
+    if (msg.t === 'start') {
+      if (r.hostId !== player.id || r.phase !== 'lobby' || r.players.size < 2) return;
+      r.phase = 'race';
+      r.quote = QUOTES[Math.floor(Math.random() * QUOTES.length)];
+      r.startAt = Date.now() + COUNTDOWN_MS;
+      r.players.forEach((p) => { p.typed = ''; p.mistakes = 0; });
+      broadcast(r, { t: 'start', quote: r.quote, countdownMs: COUNTDOWN_MS });
+    } else if (msg.t === 'progress') {
+      if (r.phase !== 'race' || Date.now() < r.startAt) return; // too early / race over
+      player.typed = String(msg.typed).slice(0, r.quote.length);
+      player.mistakes = Math.max(0, Math.floor(Number(msg.mistakes)) || 0);
+      // Progress = letters typed CORRECTLY (not just typed), so a bar only hits 100% when the quote is right.
+      const progress = Object.fromEntries([...r.players.values()].map((p) => [p.id, countCorrect(p.typed, r.quote)]));
+      broadcast(r, { t: 'progress', progress });
+      if (player.typed === r.quote) finishRace(r, player); // first to type it all wins
+    } else if (msg.t === 'rematch') {
+      if (r.hostId !== player.id || r.phase !== 'results') return;
+      r.phase = 'lobby';
+      sendLobby(r);
     }
   });
 
-  // ----- WebSocket: the game -----
-  const wss = new WebSocketServer({ server: web, path: '/ws' });
-
-  // Runs once for every browser that connects.
-  wss.on('connection', (ws) => {
-    let room: Room | undefined; // the room this connection belongs to (once it joins one)
-    let me: Player | undefined; // and which player it is
-
-    ws.on('message', (raw) => {
-      let msg: ClientMsg;
-      try { msg = JSON.parse(String(raw)); } catch { return; } // ignore garbage
-
-      // --- creating or joining a lobby ---
-      if (msg.t === 'create' || msg.t === 'join') {
-        if (room) return; // already in one
-        const name = String(msg.name).trim().slice(0, 16) || 'Player';
-        const target = msg.t === 'create' ? createRoom() : rooms.get(String(msg.code).toUpperCase());
-
-        if (!target) return send(ws, { t: 'error', msg: 'No lobby with that code.' });
-        if (target.phase !== 'lobby') return send(ws, { t: 'error', msg: 'That race has already started.' });
-        if (target.players.size >= MAX_PLAYERS) return send(ws, { t: 'error', msg: `Lobby is full (${MAX_PLAYERS} players).` });
-
-        me = { id: randomUUID().slice(0, 8), name, ws, typed: '', mistakes: 0 };
-        if (msg.t === 'create') target.hostId = me.id; // the creator is the host
-        target.players.set(me.id, me);
-        room = target;
-        sendLobby(target);
-        return;
-      }
-
-      // Everything below needs a joined player.
-      if (!room || !me) return;
-      const r = room;
-      const player = me;
-
-      if (msg.t === 'start') {
-        if (r.hostId !== player.id || r.phase !== 'lobby' || r.players.size < 2) return;
-        r.phase = 'race';
-        r.quote = QUOTES[Math.floor(Math.random() * QUOTES.length)];
-        r.startAt = Date.now() + COUNTDOWN_MS;
-        r.players.forEach((p) => { p.typed = ''; p.mistakes = 0; });
-        broadcast(r, { t: 'start', quote: r.quote, countdownMs: COUNTDOWN_MS });
-      } else if (msg.t === 'progress') {
-        if (r.phase !== 'race' || Date.now() < r.startAt) return; // too early / race over
-        player.typed = String(msg.typed).slice(0, r.quote.length);
-        player.mistakes = Math.max(0, Math.floor(Number(msg.mistakes)) || 0);
-        const progress = Object.fromEntries([...r.players.values()].map((p) => [p.id, p.typed.length]));
-        broadcast(r, { t: 'progress', progress });
-        if (player.typed === r.quote) finishRace(r, player); // first to type it all wins
-      } else if (msg.t === 'rematch') {
-        if (r.hostId !== player.id || r.phase !== 'results') return;
-        r.phase = 'lobby';
-        sendLobby(r);
-      }
-    });
-
-    ws.on('close', () => {
-      if (!room || !me) return;
-      const r = room;
-      r.players.delete(me.id);
-      if (r.players.size === 0) { rooms.delete(r.code); return; } // empty room: forget it
-      if (r.hostId === me.id) r.hostId = [...r.players.keys()][0]; // pass host to someone else
-      if (r.phase === 'race' && r.players.size < 2) finishRace(r, [...r.players.values()][0]); // opponent left
-      sendLobby(r);
-    });
+  ws.on('close', () => {
+    if (!room || !me) return;
+    const r = room;
+    r.players.delete(me.id);
+    if (r.players.size === 0) { rooms.delete(r.code); return; } // empty room: forget it
+    if (r.hostId === me.id) r.hostId = [...r.players.keys()][0]; // pass host to someone else
+    if (r.phase === 'race' && r.players.size < 2) finishRace(r, [...r.players.values()][0]); // opponent left
+    sendLobby(r);
   });
+});
 
-  return new Promise<{ port: number; close: () => void }>((resolve) => {
-    const listen = (p: number) => {
-      web.once('error', (e: NodeJS.ErrnoException) => { if (e.code === 'EADDRINUSE' && p !== 0) listen(0); });
-      web.listen(p, () =>
-        resolve({
-          port: (web.address() as AddressInfo).port,
-          close: () => { wss.close(); web.closeAllConnections(); web.close(); },
-        }),
-      );
-    };
-    listen(port);
-  });
-}
+// If something else already owns the port (usually an old copy of this server), say so loudly.
+// A silent fallback to another port would leave the browser talking to the OLD server.
+const onServerError = (e: NodeJS.ErrnoException) => {
+  if (e.code === 'EADDRINUSE') {
+    console.error(`\nPort ${PORT} is already in use. An old Keyclash server is probably still running.`);
+    console.error(`Find it with:  lsof -i :${PORT}   then stop it:  kill <PID>\n`);
+  } else {
+    console.error(e);
+  }
+  process.exit(1);
+};
+web.on('error', onServerError);
+wss.on('error', onServerError); // ws re-emits the HTTP server's errors
+
+web.listen(PORT, () => console.log(`Keyclash server on :${PORT}`));

@@ -22,16 +22,17 @@ function ProgressBar({ pct, isMe }: { pct: number; isMe: boolean }) {
   );
 }
 
-type Props = { players: PlayerInfo[]; myId: string; myTyped: number; progress: Record<string, number>; total: number };
+type Props = { players: PlayerInfo[]; myId: string; myCorrect: number; progress: Record<string, number>; total: number };
 
-export function RaceTrack({ players, myId, myTyped, progress, total }: Props) {
+export function RaceTrack({ players, myId, myCorrect, progress, total }: Props) {
   return (
     <div className="space-y-3" aria-label="Race progress">
       {players.map((p) => {
         const isMe = p.id === myId;
-        // Use our own typing for our bar (instant); the server's numbers for everyone else.
-        const typed = isMe ? myTyped : progress[p.id] ?? 0;
-        const pct = Math.round((typed / total) * 100);
+        // Our own bar uses our local count (instant); everyone else's comes from the server.
+        // Both count letters typed correctly, so 100% means the quote is finished.
+        const correct = isMe ? myCorrect : progress[p.id] ?? 0;
+        const pct = Math.round((correct / total) * 100);
         return (
           <div key={p.id} className="flex items-center gap-3">
             <span className="w-24 truncate text-sm text-dim">{isMe ? 'You' : p.name}</span>

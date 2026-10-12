@@ -36,10 +36,13 @@ export function Race({ quote, startAt, players, myId, progress, onProgress }: Pr
   const minutes = (now - startAt) / 60000;
   const wpm = started && minutes > 0.01 ? Math.round(correct / 5 / minutes) : 0;
 
+  // Reached the end but some letters are wrong: the race only ends on an exact match.
+  const needsFix = typed.length === quote.length && correct < quote.length;
+
   return (
     <>
       <Screen>
-        <RaceTrack players={players} myId={myId} myTyped={typed.length} progress={progress} total={quote.length} />
+        <RaceTrack players={players} myId={myId} myCorrect={correct} progress={progress} total={quote.length} />
 
         {/* Clicking the text re-focuses the hidden input (handy if you click away). */}
         <div className="relative cursor-text" onClick={() => inputProps.ref.current?.focus()}>
@@ -53,6 +56,7 @@ export function Race({ quote, startAt, players, myId, progress, onProgress }: Pr
         </div>
 
         <p className="font-mono text-dim">{wpm} wpm</p>
+        {needsFix && <p role="alert" className="text-miss">Almost! Fix the red letters to finish.</p>}
       </Screen>
 
       {/* Keep it mounted a moment after "Go" so its fade-out can play. */}
