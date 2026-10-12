@@ -1,0 +1,47 @@
+{
+  "name": "keyclash",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Competitive multiplayer typing races",
+  "author": "Keyclash",
+  "type": "module",
+  "main": "electron/main.mjs",
+  "scripts": {
+    "dev": "concurrently -n server,web \"tsx watch server/cli.ts\" \"vite\"",
+    "build": "tsc --noEmit && vite build",
+    "start": "tsx server/cli.ts",
+    "build:server": "esbuild server/index.ts --bundle --platform=node --format=cjs --outfile=server-dist/server.cjs --external:bufferutil --external:utf-8-validate",
+    "electron": "npm run build && npm run build:server && electron .",
+    "dist": "npm run build && npm run build:server && electron-builder"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.0.0",
+    "@types/node": "^22.0.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@types/ws": "^8.5.13",
+    "@vitejs/plugin-react": "^4.3.4",
+    "animejs": "^4.0.2",
+    "concurrently": "^9.1.0",
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8",
+    "esbuild": "^0.24.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tailwindcss": "^4.0.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vite": "^6.0.0",
+    "vite-plugin-pwa": "^0.21.1",
+    "ws": "^8.18.0"
+  },
+  "build": {
+    "appId": "com.keyclash.app",
+    "productName": "Keyclash",
+    "directories": { "output": "release" },
+    "files": ["dist/**/*", "server-dist/server.cjs", "electron/**/*"],
+    "mac": { "category": "public.app-category.games", "icon": "public/icon-512.png", "target": ["dmg", "zip"] },
+    "win": { "icon": "public/icon-512.png", "target": ["nsis"] },
+    "linux": { "icon": "public/icon-512.png", "target": ["AppImage"] }
+  }
+}

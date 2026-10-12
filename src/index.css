@@ -1,0 +1,19 @@
+/* Tailwind v4: this one import turns on all the utility classes (text-white, p-4, ...). */
+@import "tailwindcss";
+
+/* Our colors and fonts. Each --color-x becomes classes like bg-x, text-x, border-x. */
+@theme {
+  --color-ink: #1c1f2a;   /* page background */
+  --color-panel: #262a38; /* cards, inputs */
+  --color-dim: #70768f;   /* untyped letters, secondary text */
+  --color-sun: #ffd23f;   /* yellow: cursor, primary buttons */
+  --color-miss: #ff5c5c;  /* wrong letters, errors */
+  --font-sans: "Bricolage Grotesque", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+}
+
+body {
+  background: var(--color-ink);
+  color: #f4f4f5;
+  font-family: var(--font-sans);
+}
